@@ -445,8 +445,8 @@ CUDA_KERNEL
 void make_waveform(cmplx *waveform,
                    double *interp_array, double *phase_interp_coeffs,
                    int *m_arr_in, int *n_arr_in, int num_teuk_modes, cmplx *Ylms_in,
-                   double delta_t, double start_t, int old_ind, int start_ind, int end_ind, int init_length,
-                   double phase_interp_t_here, double phase_interp_segwidth)
+                   double delta_t, double start_t, int old_ind, int start_ind, int end_ind, int init_length, int out_len,
+                   double phase_interp_t_here, double phase_interp_segwidth, bool separate_modes)
 {
 
   // int num_pars = 2;
@@ -460,7 +460,7 @@ void make_waveform(cmplx *waveform,
   cmplx partial_mode;
   cmplx trans_plus_m(0.0, 0.0), trans_minus_m(0.0, 0.0);
   double Phi_phi_i, Phi_r_i, t, x, x2, x3, mode_val_re, mode_val_im, s, s1;
-  int lm_i, num_teuk_here;
+  int num_teuk_here;
   double re_y, re_c1, re_c2, re_c3, im_y, im_c1, im_c2, im_c3;
   CUDA_SHARED double pp_y, pp_c1, pp_c2, pp_c3, pp_c4, pp_c5, pp_c6, pp_c7;
   CUDA_SHARED double pr_y, pr_c1, pr_c2, pr_c3, pr_c4, pr_c5, pr_c6, pr_c7;
@@ -536,7 +536,7 @@ void make_waveform(cmplx *waveform,
 
   CUDA_SYNC_THREADS;
 
-  int m, n, actual_mode_index;
+  int m, n;
   cmplx Ylm_plus_m, Ylm_minus_m;
 
   int num_breaks = (num_teuk_modes / MAX_MODES_BLOCK) + 1;
@@ -607,8 +607,6 @@ void make_waveform(cmplx *waveform,
          i += diff)
     {
 
-      trans2 = 0.0 + 0.0 * complexI;
-
       trans = 0.0 + 0.0 * complexI;
 
       // determine interpolation information
@@ -638,18 +636,12 @@ void make_waveform(cmplx *waveform,
         m = m_arr[j];
         n = n_arr[j];
 
-        // mode_val_re = mode_re_y[j] + mode_re_c1[j] * x + mode_re_c2[j] * x2 + mode_re_c3[j] * x3;
-        // mode_val_im = mode_im_y[j] + mode_im_c1[j] * x + mode_im_c2[j] * x2 + mode_im_c3[j] * x3;
-        // mode_val = mode_val_re + complexI * mode_val_im;
-
-        // fod phase = m * Phi_phi_i + n * Phi_r_i;
-        // partial_mode = mode_val * gcmplx::exp(minus_I * phase);
         partial_mode = gcmplx::exp(minus_I * (m * Phi_phi_i + n * Phi_r_i)) * (mode_re_y[j] + mode_re_c1[j] * x + mode_re_c2[j] * x2 + mode_re_c3[j] * x3 + complexI * (mode_im_y[j] + mode_im_c1[j] * x + mode_im_c2[j] * x2 + mode_im_c3[j] * x3));
         trans_plus_m = partial_mode * Ylm_plus_m;
 
         // minus m if m > 0
         // mode values for +/- m are taking care of when applying
-        // specific mode selection by setting ylms to zero for the opposites
+        // specific mode selection (or for mn sum) by setting ylms to zero for the opposites
         if (m != 0)
         {
 
@@ -659,15 +651,22 @@ void make_waveform(cmplx *waveform,
         else
           trans_minus_m = 0.0 + 0.0 * complexI;
 
-        trans = trans + trans_minus_m + trans_plus_m;
+        if (!separate_modes) {
+          trans = trans + trans_minus_m + trans_plus_m;
+        }
+        else {
+          waveform[j * out_len + i] = (trans_plus_m + trans_minus_m);
+        }
       }
 
-// fill waveform
-#ifdef __CUDACC__
-      atomicAddComplex(&waveform[i], trans);
-#else
-      waveform[i] += trans;
-#endif
+    if (!separate_modes) {
+      // fill waveform
+      #ifdef __CUDACC__
+            atomicAddComplex(&waveform[i], trans);
+      #else
+            waveform[i] += trans;
+      #endif
+    }
     }
     CUDA_SYNC_THREADS;
   }
@@ -710,7 +709,7 @@ void find_start_inds(int start_inds[], int unit_length[], double *t_arr, double 
 // function for building interpolated EMRI waveform from python
 void get_waveform(cmplx *d_waveform, double *interp_array, double *phase_interp_t, double *phase_interp_coeffs,
                   int *d_m, int *d_n, int init_len, int out_len, int num_teuk_modes, cmplx *d_Ylms,
-                  double delta_t, double *h_t, int dev)
+                  double delta_t, double *h_t, int dev, bool separate_modes)
 {
 
   // arrays for determining spline windows for new arrays
@@ -750,8 +749,9 @@ void get_waveform(cmplx *d_waveform, double *interp_array, double *phase_interp_
     make_waveform<<<gridDim, NUM_THREADS, 0, streams[i]>>>(d_waveform,
                                                            interp_array, phase_interp_coeffs,
                                                            d_m, d_n, num_teuk_modes, d_Ylms,
-                                                           delta_t, h_t[i], i, start_inds[i], start_inds[i + 1], init_len,
-                                                           phase_interp_t[i], phase_interp_t[i+1] - phase_interp_t[i]);
+                                                           delta_t, h_t[i], i, start_inds[i], start_inds[i + 1], init_len, out_len,
+                                                           phase_interp_t[i], phase_interp_t[i+1] - phase_interp_t[i],
+                                                           separate_modes);
     cudaDeviceSynchronize();
     gpuErrchk(cudaGetLastError());
     cudaDeviceSynchronize();
@@ -761,8 +761,8 @@ void get_waveform(cmplx *d_waveform, double *interp_array, double *phase_interp_
     make_waveform(d_waveform,
                   interp_array, phase_interp_coeffs,
                   d_m, d_n, num_teuk_modes, d_Ylms,
-                  delta_t, h_t[i], i, start_inds[i], start_inds[i + 1], init_len,
-                  phase_interp_t[i], phase_interp_t[i+1] - phase_interp_t[i]);
+                  delta_t, h_t[i], i, start_inds[i], start_inds[i + 1], init_len, out_len,
+                  phase_interp_t[i], phase_interp_t[i+1] - phase_interp_t[i], separate_modes);
 #endif
   }
 

@@ -28,7 +28,7 @@ void interpolate_arrays(double *t_arr, double *interp_array, int ninterps, int l
 
 void get_waveform(cmplx *d_waveform, double *interp_array, double *phase_spline_t, double *phase_spline_coeffs,
               int *d_m, int *d_n, int init_len, int out_len, int num_teuk_modes, cmplx *d_Ylms,
-                  double delta_t, double *h_t, int dev);
+                  double delta_t, double *h_t, int dev, bool separate_modes);
 
 void get_waveform_generic_fd(cmplx *waveform,
              double *interp_array, double *phase_spline_t, double *phase_spline_coeffs,

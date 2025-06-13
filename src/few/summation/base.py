@@ -25,6 +25,7 @@ class SummationBase(ParallelModuleBase):
         output_type: str = "td",
         pad_output: bool = False,
         odd_len: bool = False,
+        separate_modes: bool = False,
         force_backend: BackendLike = None,
     ):
         ParallelModuleBase.__init__(self, force_backend=force_backend)

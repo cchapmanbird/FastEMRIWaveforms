@@ -8,6 +8,7 @@ from few.utils.globals import get_logger
 from ..utils.baseclasses import BackendLike, ParallelModuleBase
 from .base import SummationBase
 
+from numba import cuda, jit
 
 class CubicSplineInterpolant(ParallelModuleBase):
     """GPU-accelerated Multiple Cubic Splines
@@ -257,6 +258,35 @@ class CubicSplineInterpolant(ParallelModuleBase):
         return out.squeeze()
 
 
+@cuda.jit
+def _reduce_teuk_modes_gpu(teuk_modes_reduced, teuk_modes, init_len, num_teuk_modes, map_inds):
+    tx = cuda.threadIdx.x
+    bx = cuda.blockDim.x
+
+    # for jj in range(tx, bx, num_teuk_modes):
+    #     new_idx = map_inds[jj]
+    #     for ii in range(init_len):
+    #         teuk_modes_reduced[ii, new_idx] += teuk_modes[ii, jj]
+
+    # One thread block per init point
+    ii = cuda.blockIdx.x
+    # Loop over teuk modes
+    for jj in range(tx, num_teuk_modes, bx):
+        teuk_modes_reduced[ii, map_inds[jj]] += teuk_modes[ii, jj]
+
+@jit
+def _reduce_teuk_modes_cpu(teuk_modes_reduced, teuk_modes, init_len, num_teuk_modes, map_inds):
+    for ii in range(init_len):
+        for jj in range(num_teuk_modes):
+            teuk_modes_reduced[ii, map_inds[jj]] += teuk_modes[ii, jj]
+
+
+def reduce_teuk_modes(teuk_modes_reduced, teuk_modes, init_len, num_teuk_modes, map_inds, use_gpu):
+    if use_gpu:
+        _reduce_teuk_modes_gpu[init_len, 32](teuk_modes_reduced, teuk_modes, init_len, num_teuk_modes, map_inds)
+    else:
+        _reduce_teuk_modes_cpu(teuk_modes_reduced, teuk_modes, init_len, num_teuk_modes, map_inds)
+
 class InterpolatedModeSum(SummationBase):
     """Create waveform by interpolating a sparse trajectory.
 
@@ -268,8 +298,17 @@ class InterpolatedModeSum(SummationBase):
 
     """
 
-    def __init__(self, force_backend: BackendLike = None, **kwargs):
+    def __init__(self, force_backend: BackendLike = None, presum_ell: bool = False, separate_modes: bool = False, **kwargs):        
         SummationBase.__init__(self, **kwargs, force_backend=force_backend)
+
+        self.presum_ell = presum_ell
+        "If True, modes with common (m, n) will be summed together before interpolation."
+        "This is useful for the pre-summation of modes with common (m, n) values."
+        "Default is False (l modes in kernel)."
+
+        self.separate_modes = separate_modes
+        "If True, the summation will return each mode separately. If self.presum_ell is True,"
+        "this will return only (m, n) modes. TODO pass out new order. Default is False."
 
     @property
     def get_waveform(self) -> callable:
@@ -325,6 +364,44 @@ class InterpolatedModeSum(SummationBase):
         num_teuk_modes = teuk_modes.shape[1]
         num_pts = self.num_pts
 
+        # for ylm with negative m, need to multiply by (-1)**l as this is assumed to have happened by the kernel
+        ylms = ylms.copy()
+        ylms[teuk_modes.shape[1]:] *= (-1) ** l_arr
+
+        if self.presum_ell:
+            
+            teuk_modes = self.xp.concat((teuk_modes, teuk_modes.conj()), axis=1) * ylms
+
+            m_arr = self.xp.concat((m_arr, -m_arr))
+            n_arr = self.xp.concat((n_arr, -n_arr))
+
+            num_teuk_modes = teuk_modes.shape[1]
+
+            # we now perform the reduction over the l modes
+            # we define a unique mapping for the two integers
+            n_max = n_arr.max() - n_arr.min()
+
+            composite_keys = (m_arr - m_arr.min()) * (n_max+1) + (n_arr - n_arr.min())
+
+            unique_keys, reduce_inds, map_inds = self.xp.unique(composite_keys, return_index=True, return_inverse=True)
+
+            m_arr = m_arr[reduce_inds]
+            n_arr = n_arr[reduce_inds]
+
+            # we now reduce the teuk modes over the l modes
+            teuk_modes_reduced = self.xp.zeros((init_len, reduce_inds.size), dtype=teuk_modes.dtype)
+
+            reduce_teuk_modes(teuk_modes_reduced, teuk_modes, init_len, num_teuk_modes, map_inds, self.backend.uses_gpu)
+            # _reduce_teuk_modes_cpu(teuk_modes_reduced, teuk_modes, init_len, num_teuk_modes, map_inds)
+
+            teuk_modes = teuk_modes_reduced
+
+            num_teuk_modes = reduce_inds.size
+
+            # ylms become mask to not include conjugate modes (as we pre-summed ell instead)
+            ylms = self.xp.zeros((2 * num_teuk_modes,), dtype=self.xp.complex128)
+            ylms[:num_teuk_modes] = 1
+
         length = init_len
         ninterps = 2 * num_teuk_modes  # 2 for re and im
         y_all = self.xp.zeros((ninterps, length))
@@ -351,9 +428,8 @@ class InterpolatedModeSum(SummationBase):
             self.xp.asarray(phase_interp_coeffs), [2, 0, 1]
         ).flatten()
 
-        # for ylm with negative m, need to multiply by (-1)**l as this is assumed to have happened by the kernel
-        ylms = ylms.copy()
-        ylms[num_teuk_modes:] *= (-1) ** l_arr
+        if self.separate_modes:
+            self.waveform = self.xp.zeros((num_teuk_modes * (self.num_pts + self.num_pts_pad),), dtype=self.xp.complex128)
 
         self.get_waveform(
             self.waveform,
@@ -369,4 +445,8 @@ class InterpolatedModeSum(SummationBase):
             dt,
             h_t,
             dev,
+            self.separate_modes,
         )
+
+        if self.separate_modes:
+            self.waveform = self.waveform.reshape(num_teuk_modes, self.num_pts + self.num_pts_pad).T
