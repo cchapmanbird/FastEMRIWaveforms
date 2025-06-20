@@ -268,11 +268,35 @@ def _reduce_teuk_modes_gpu(teuk_modes_reduced, teuk_modes, init_len, num_teuk_mo
     #     for ii in range(init_len):
     #         teuk_modes_reduced[ii, new_idx] += teuk_modes[ii, jj]
 
+    num_reduced_teuk_modes = teuk_modes_reduced.shape[1]
+
     # One thread block per init point
     ii = cuda.blockIdx.x
     # Loop over teuk modes
-    for jj in range(tx, num_teuk_modes, bx):
-        teuk_modes_reduced[ii, map_inds[jj]] += teuk_modes[ii, jj]
+
+    if ii < init_len:
+        temparr = cuda.shared.array(0, dtype=np.float64)
+        # initialise it to zeroes
+        for jj in range(tx, num_reduced_teuk_modes * 2, bx):
+            temparr[jj] = 0.0
+        
+        cuda.syncthreads()    
+
+        for jj in range(tx, num_teuk_modes, bx):
+            # teuk_modes_reduced[ii, map_inds[jj]] += teuk_modes[ii, jj]
+            temp = teuk_modes[ii, jj]
+            cuda.atomic.add(temparr, (map_inds[jj]), temp.real)
+            cuda.atomic.add(temparr, (map_inds[jj] + num_reduced_teuk_modes), temp.imag)
+
+        cuda.syncthreads()
+
+        for jj in range(tx, num_reduced_teuk_modes, bx):
+            t1 = temparr[jj]
+            t2 = temparr[jj + num_reduced_teuk_modes]
+            teuk_modes_reduced[ii, jj] = (t1 + 1j*t2)
+
+        cuda.syncthreads()
+
 
 @jit
 def _reduce_teuk_modes_cpu(teuk_modes_reduced, teuk_modes, init_len, num_teuk_modes, map_inds):
@@ -280,10 +304,9 @@ def _reduce_teuk_modes_cpu(teuk_modes_reduced, teuk_modes, init_len, num_teuk_mo
         for jj in range(num_teuk_modes):
             teuk_modes_reduced[ii, map_inds[jj]] += teuk_modes[ii, jj]
 
-
 def reduce_teuk_modes(teuk_modes_reduced, teuk_modes, init_len, num_teuk_modes, map_inds, use_gpu):
     if use_gpu:
-        _reduce_teuk_modes_gpu[init_len, 32](teuk_modes_reduced, teuk_modes, init_len, num_teuk_modes, map_inds)
+        _reduce_teuk_modes_gpu[init_len, 64, 0, int(2 * teuk_modes_reduced.shape[1] * 8)](teuk_modes_reduced, teuk_modes, init_len, num_teuk_modes, map_inds)
     else:
         _reduce_teuk_modes_cpu(teuk_modes_reduced, teuk_modes, init_len, num_teuk_modes, map_inds)
 
@@ -370,10 +393,10 @@ class InterpolatedModeSum(SummationBase):
 
         if self.presum_ell:
             
-            teuk_modes = self.xp.concat((teuk_modes, teuk_modes.conj()), axis=1) * ylms
+            teuk_modes = self.xp.concatenate((teuk_modes, teuk_modes.conj()), axis=1) * ylms
 
-            m_arr = self.xp.concat((m_arr, -m_arr))
-            n_arr = self.xp.concat((n_arr, -n_arr))
+            m_arr = self.xp.concatenate((m_arr, -m_arr))
+            n_arr = self.xp.concatenate((n_arr, -n_arr))
 
             num_teuk_modes = teuk_modes.shape[1]
 
@@ -392,7 +415,6 @@ class InterpolatedModeSum(SummationBase):
             teuk_modes_reduced = self.xp.zeros((init_len, reduce_inds.size), dtype=teuk_modes.dtype)
 
             reduce_teuk_modes(teuk_modes_reduced, teuk_modes, init_len, num_teuk_modes, map_inds, self.backend.uses_gpu)
-            # _reduce_teuk_modes_cpu(teuk_modes_reduced, teuk_modes, init_len, num_teuk_modes, map_inds)
 
             teuk_modes = teuk_modes_reduced
 
@@ -439,7 +461,8 @@ class InterpolatedModeSum(SummationBase):
             m_arr.astype(self.xp.int32),
             n_arr.astype(self.xp.int32),
             init_len,
-            num_pts,
+            self.num_pts,
+            self.num_pts_pad,
             num_teuk_modes,
             ylms.astype(self.xp.complex128),
             dt,
