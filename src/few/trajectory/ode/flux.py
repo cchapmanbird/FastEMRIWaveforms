@@ -802,3 +802,67 @@ class KerrEccEqFluxLegacy(ODEBase):
         pdot, edot = self.interpolate_flux_grids(p, e, x)
 
         return [pdot, edot, 0.0, Omega_phi, Omega_theta, Omega_r]
+
+
+class KerrGenericFluxScott(ODEBase):
+
+    @property
+    def separatrix_buffer_dist(self):
+        return 2e-3
+
+    @property
+    def separatrix_buffer_dist_grid(self):
+        return 1e-3
+
+    @property
+    def supports_ELQ(self):
+        return False
+    
+    def __init__(self, *args, use_ELQ=False, **kwargs):
+        super().__init__(*args, use_ELQ=use_ELQ, **kwargs)
+
+        fluxes = np.loadtxt(get_file_manager().get_file("a0.700000_n3.flux")).reshape(9, 16, 129, -1)
+
+        uv = np.linspace(0, 1, 129)
+        wv = np.linspace(0, 1, 9)
+        xIv = np.linspace(-1, 1, 16)
+
+        fluxes = np.flip(fluxes, axis=1)
+
+        # build the p, e, x interpolants
+        self.pdot_interp = TricubicSpline(wv, xIv, uv, fluxes[:,:,:,-6] + fluxes[:,:,:,-5])
+        self.edot_interp = TricubicSpline(wv, xIv, uv, fluxes[:,:,:,-4] + fluxes[:,:,:,-3])
+        self.xidot_interp = TricubicSpline(wv, xIv, uv, fluxes[:,:,:,-2] + fluxes[:,:,:,-1])
+
+
+    def interpolate_flux_grids(
+        self,
+        p: float,
+        e: float,
+        x: float = 1,
+        a: float = 0,
+        pLSO = None,
+    ) -> tuple[float]:
+        if pLSO is None:
+            pLSO = get_separatrix(a, e, x)
+
+        # pvg = sepsg - 8.999 + 9 * 2 ** (uvg ** 4)
+        u = np.log2((p - pLSO + 8.999)/9)**0.25
+        w = (e / (0.25 + 0.25 * u**2))**0.5
+        
+        pdot = self.pdot_interp(w, x, u)
+        edot = self.edot_interp(w, x, u)
+        xdot = self.xidot_interp(w, x, u)
+
+        return pdot, edot, xdot
+
+    def evaluate_rhs(self, y):
+        p, e, x = y[:3]
+
+        Omega_phi, Omega_theta, Omega_r = get_fundamental_frequencies(self.a, p, e, x)
+
+        pdot, edot, xidot = self.interpolate_flux_grids(
+            p, e, x, a=self.a, pLSO=self.p_sep_cache
+        )
+
+        return [pdot, edot, xidot, Omega_phi, Omega_theta, Omega_r]

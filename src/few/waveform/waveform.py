@@ -5,18 +5,19 @@ from typing import Generic, Optional, Union
 
 import numpy as np
 
-from ..amplitude.ampinterp2d import AmpInterpKerrEccEq, AmpInterpSchwarzEcc
+from ..amplitude.ampinterp2d import AmpInterpKerrEccEq, AmpInterpSchwarzEcc, AmpInterpKerrGeneric
 from ..amplitude.romannet import RomanAmplitude
 from ..summation.aakwave import AAKSummation
 from ..summation.directmodesum import DirectModeSum
 from ..summation.fdinterp import FDInterpolatedModeSum
 from ..summation.interpolatedmodesum import InterpolatedModeSum
 from ..trajectory.inspiral import EMRIInspiral
-from ..trajectory.ode import PN5, KerrEccEqFlux, SchwarzEccFlux
+from ..trajectory.ode import PN5, KerrEccEqFlux, SchwarzEccFlux, KerrGenericFluxScott
 from ..utils.baseclasses import (
     BackendLike,
     KerrEccentricEquatorial,
     SchwarzschildEccentric,
+    KerrGeneric
 )
 from ..utils.constants import MRSUN_SI, Gpc
 from ..utils.mappings.pn import xI_to_Y
@@ -449,7 +450,7 @@ class FastKerrEccentricEquatorialFlux(
             **{
                 key: value
                 for key, value in kwargs.items()
-                if key in ["lmax", "nmax", "ndim"]
+                if key in ["lmax", "nmax"]
             },
             force_backend=force_backend,
         )
@@ -602,7 +603,7 @@ class FastSchwarzschildEccentricFlux(
 
         SchwarzschildEccentric.__init__(
             self,
-            **{k: v for k, v in kwargs.items() if k in ["lmax", "ndim"]},
+            **{k: v for k, v in kwargs.items() if k in ["lmax", ]},
             nmax=kwargs["nmax"] if "nmax" in kwargs else 30,
             force_backend=force_backend,
         )
@@ -750,7 +751,7 @@ class FastSchwarzschildEccentricFluxBicubic(
 
         SchwarzschildEccentric.__init__(
             self,
-            **{k: v for k, v in kwargs.items() if k in ["lmax", "ndim", "nmax"]},
+            **{k: v for k, v in kwargs.items() if k in ["lmax", "nmax"]},
             force_backend=force_backend,
         )
         SphericalHarmonicWaveformBase.__init__(
@@ -889,7 +890,7 @@ class SlowSchwarzschildEccentricFlux(
 
         SchwarzschildEccentric.__init__(
             self,
-            **{k: v for k, v in kwargs.items() if k in ["lmax", "ndim", "nmax"]},
+            **{k: v for k, v in kwargs.items() if k in ["lmax", "nmax"]},
             force_backend=force_backend,
         )
         SphericalHarmonicWaveformBase.__init__(

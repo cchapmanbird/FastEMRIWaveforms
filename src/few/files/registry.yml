@@ -269,3 +269,12 @@ files:
       - algorithm: sha256
         value: a0aa28e9accfd05b8b2aceb6799b471bcb8d1756fb7b0bff61957a985a40c6c1
     tags: [testfile]
+  - name: a0.700000_n3.flux
+    checksums:
+      - algorithm: sha256
+        value: 8abb5b20c1ab4500891f49e6c708b8a0515d0173e55d84f65b92bc8d313d288e
+  - name: ScottGenericAmps_1.h5
+    checksums:
+      - algorithm: sha256
+        value: 8af4daf9fc8f03dd6fd214ec0d4cd17450ae7d3daf4f92d5c8eb4ea8447306b9
+        # value: 6d3ec83e7b54fd505b3b438907821524576895b3ffcff870e0223e0be86b56bd
