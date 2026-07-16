@@ -1,8 +1,11 @@
 name: Build and publish wheels
+
 on:
   push:
+
 permissions:
   contents: read
+
 jobs:
   select:
     runs-on: ubuntu-latest
@@ -18,67 +21,65 @@ jobs:
           echo "FEWWHL_CORE_SUFFIX=false" >> "$GITHUB_ENV"
           echo "FEWWHL_PUBLISH=false" >> "$GITHUB_ENV"
           echo "FEWWHL_DOC_TAG=stable" >> "$GITHUB_ENV"
+
       - name: build on commit message
         if: contains(github.event.head_commit.message, '[ci:build-wheels]')
         run: |
           echo "FEWWHL_BUILD=true" >> "$GITHUB_ENV"
+
       - name: build and publish on tag 'v*'
         if: startsWith(github.event.ref, 'refs/tags/v')
         run: |
           echo "FEWWHL_BUILD=true" >> "$GITHUB_ENV"
           echo "FEWWHL_PUBLISH=true" >> "$GITHUB_ENV"
           echo "FEWWHL_DOC_TAG=${GITHUB_REF#refs/tags/}" >> "$GITHUB_ENV"
+
       - name: add core-suffix on non-official repo
         if: github.event.repository.full_name != 'BlackHolePerturbationToolkit/FastEMRIWaveforms'
         run: |
           echo "FEWWHL_CORE_SUFFIX=true" >> "$GITHUB_ENV"
+
       - name: output results
         id: select
         run: |
-          echo "build=$FEWWHL_BUILD" >> $GITHUB_OUTPUT
-          echo "publish=$FEWWHL_PUBLISH" >> $GITHUB_OUTPUT
-          echo "core-suffix=$FEWWHL_CORE_SUFFIX" >> $GITHUB_OUTPUT
-          echo "doc-tag=$FEWWHL_DOC_TAG" >> $GITHUB_OUTPUT
+          echo "build=$FEWWHL_BUILD" >> "$GITHUB_OUTPUT"
+          echo "publish=$FEWWHL_PUBLISH" >> "$GITHUB_OUTPUT"
+          echo "core-suffix=$FEWWHL_CORE_SUFFIX" >> "$GITHUB_OUTPUT"
+          echo "doc-tag=$FEWWHL_DOC_TAG" >> "$GITHUB_OUTPUT"
+
   version:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.setuptools_scm.outputs.value }}
     steps:
-      # =========================
-      # = I - Retrieve sources  =
-      # =========================
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
           fetch-tags: true
-      # ===================================
-      # = II - Prepare Python environment =
-      # ===================================
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: |
-          pip install setuptools_scm
-      # ========================
-      # = III - Detect version =
-      # ========================
+
+      - run: pip install setuptools_scm
+
       - name: Update version scheme
         run: |
           sed -i'' -e 's|version_scheme = "no-guess-dev"|version_scheme = "only-version"|g' pyproject.toml
           sed -i'' -e 's|local_scheme = "node-and-date"|local_scheme = "no-local-version"|g' pyproject.toml
+
       - name: Detect current version
         id: setuptools_scm
         run: |
           VERSION="$(python -m setuptools_scm)"
           echo "notice:: Detected version: ${VERSION}"
-          echo "value=${VERSION}" >> $GITHUB_OUTPUT
-          echo "version: ${VERSION}" >> $GITHUB_STEP_SUMMARY
+          echo "value=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "version: ${VERSION}" >> "$GITHUB_STEP_SUMMARY"
+
   build:
     name: few-${{ matrix.release }} on ${{ matrix.os }}-${{ matrix.arch }}
     runs-on: ${{ matrix.os }}
-    needs:
-      - select
-      - version
+    needs: [select, version]
     if: needs.select.outputs.build == 'true'
     strategy:
       fail-fast: false
@@ -89,6 +90,7 @@ jobs:
             arch: x86_64
             kind: core
             reqpython: '>=3.12'
+
           - release: cuda12x
             os: ubuntu-latest
             arch: x86_64
@@ -96,81 +98,74 @@ jobs:
             cuda_major: 12
             cuda_minor: 4
             reqpython: '>=3.12'
+
           - release: cpu
             os: ubuntu-24.04-arm
             arch: aarch64
             kind: core
             reqpython: '>=3.12'
-          # - release: cuda12x
-          #   os: ubuntu-latest
-          #   arch: aarch64
-          #   target: manylinux
-          #   kind: cuda_plugin
-          #   cuda_major: 12
-          #   cuda_minor: 6
+
+          # NEW: ARM64 CUDA plugin build
+          - release: cuda12x
+            os: ubuntu-24.04-arm
+            arch: aarch64
+            kind: cuda_plugin
+            cuda_major: 12
+            cuda_minor: 4
+            reqpython: '>=3.12'
+
           - release: cpu
             os: macos-14
+            arch: arm64
             kind: core
             reqpython: '>=3.12'
-            arch: arm64
             macos_ver: 14.0
+
     steps:
-      # =========================
-      # = I - Retrieve sources  =
-      # =========================
       - uses: actions/checkout@v4
-      # ========================
-      # = II - Update sources  =
-      # ========================
+
       - name: Add release suffix to project name
         if: matrix.kind != 'core'
         run: |
           sed -i'' -e 's|" #@NAMESUFFIX@|-${{ matrix.release }}"|g' pyproject.toml
+
       - name: Add release suffix to core package for TestPyPI
         if: matrix.kind == 'core' && needs.select.outputs.core-suffix == 'true'
         run: |
           sed -i'' -e 's|" #@NAMESUFFIX@|-${{ matrix.release }}"|g' pyproject.toml
-      # Add CuPy dependency
+
       - name: Add Cupy dependency
         if: matrix.kind == 'cuda_plugin'
         run: |
           sed -i'' -e 's|#@DEPS_CUPYCUDA@|"cupy-cuda${{ matrix.cuda_major }}x"|g' pyproject.toml
-      # Add Core project dependency
-      - name: Add core project dependency on plugin
+
+      - name: Add core project dependency on plugin (suffixed core)
         if: matrix.kind != 'core' && needs.select.outputs.core-suffix == 'true'
         run: |
           sed -i'' -e 's|#@DEPS_FEWCORE@|"fastemriwaveforms-cpu==${{ needs.version.outputs.version }}"|g' pyproject.toml
-      - name: Add core project dependency on plugin
+
+      - name: Add core project dependency on plugin (official core)
         if: matrix.kind != 'core' && needs.select.outputs.core-suffix == 'false'
         run: |
           sed -i'' -e 's|#@DEPS_FEWCORE@|"fastemriwaveforms==${{ needs.version.outputs.version }}"|g' pyproject.toml
-      # Remove base sources from plugin wheels
+
       - name: Exclude core package from plugins
         if: matrix.kind != 'core'
         run: |
           sed -i'' -e '/@SKIP_PLUGIN@/d' pyproject.toml
-      # Set documentation tag in Readme
+
       - name: Set documentation tag in Readme
         run: |
           sed -i'' -e 's|en/stable|en/${{ needs.select.outputs.doc-tag }}|g' README.md
           sed -i'' -e 's|en/stable|en/${{ needs.select.outputs.doc-tag }}|g' pyproject.toml
-      # ===================================
-      # = III. Prepare build environment  =
-      # ===================================
-      - name: Set up QEMU
-        if: matrix.os == 'ubuntu-latest' && matrix.arch != 'x86_64'
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: all
-      # =====================
-      # = IV. Build wheels  =
-      # =====================
+
       - uses: fortran-lang/setup-fortran@v1
         if: matrix.kind == 'core'
         id: setup-fortran
         with:
           compiler: gcc
           version: 14
+
       - name: Build core wheels (macOS)
         if: runner.os == 'macOS' && matrix.kind == 'core'
         uses: pypa/cibuildwheel@v2.22.0
@@ -186,6 +181,7 @@ jobs:
           CIBW_ENVIRONMENT: >
             SETUPTOOLS_SCM_PRETEND_VERSION="${{ needs.version.outputs.version }}"
           MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macos_ver }}
+
       - name: Build core wheels (Linux)
         if: runner.os == 'Linux' && matrix.kind == 'core'
         uses: pypa/cibuildwheel@v2.22.0
@@ -210,23 +206,33 @@ jobs:
             PKG_CONFIG_PATH="/opt/lapack/lib64/pkgconfig/:${PKG_CONFIG_PATH}"
             SETUPTOOLS_SCM_PRETEND_VERSION="${{ needs.version.outputs.version }}"
           CIBW_TEST_COMMAND: python -m few.tests --disable testfile
+
+      # CUDA plugin build for both x86_64 and aarch64 with arch-specific setup
       - name: Build cuda plugin wheels (Linux)
-        if: runner.os == 'Linux' && matrix.kind == 'cuda_plugin' && matrix.arch == 'x86_64'
+        if: runner.os == 'Linux' && matrix.kind == 'cuda_plugin'
         uses: pypa/cibuildwheel@v2.22.0
         env:
           CIBW_PROJECT_REQUIRES_PYTHON: ${{ matrix.reqpython }}
           CIBW_ARCHS_LINUX: ${{ matrix.arch }}
           CIBW_SKIP: pp* *musllinux*
           CIBW_MANYLINUX_X86_64_IMAGE: manylinux_2_28
+          CIBW_MANYLINUX_AARCH64_IMAGE: manylinux_2_28
           CIBW_CONFIG_SETTINGS: >
             cmake.define.FEW_LAPACKE_FETCH=OFF
             cmake.define.FEW_WITH_GPU=ONLY
             cmake.define.FEW_CUDA_ARCH=all
           CIBW_BEFORE_ALL: >
-            yum install -y gcc gcc-c++ make &&
-            yum install -y yum-utils &&
-            yum-config-manager --add-repo https://developer.download.nvidia.com/compute/cuda/repos/rhel8/x86_64/cuda-rhel8.repo &&
-            yum install -y cuda-compiler-${{ matrix.cuda_major }}-${{ matrix.cuda_minor }} cuda-libraries-${{ matrix.cuda_major }}-${{ matrix.cuda_minor }} cuda-libraries-devel-${{ matrix.cuda_major }}-${{ matrix.cuda_minor }}
+            if [ "${{ matrix.arch }}" = "x86_64" ]; then
+              yum install -y gcc gcc-c++ make yum-utils &&
+              yum-config-manager --add-repo https://developer.download.nvidia.com/compute/cuda/repos/rhel8/x86_64/cuda-rhel8.repo &&
+              yum install -y cuda-compiler-${{ matrix.cuda_major }}-${{ matrix.cuda_minor }} cuda-libraries-${{ matrix.cuda_major }}-${{ matrix.cuda_minor }} cuda-libraries-devel-${{ matrix.cuda_major }}-${{ matrix.cuda_minor }};
+            elif [ "${{ matrix.arch }}" = "aarch64" ]; then
+              yum install -y gcc gcc-c++ make yum-utils &&
+              yum-config-manager --add-repo https://developer.download.nvidia.com/compute/cuda/repos/rhel8/sbsa/cuda-rhel8.repo &&
+              yum install -y cuda-compiler-${{ matrix.cuda_major }}-${{ matrix.cuda_minor }} cuda-libraries-${{ matrix.cuda_major }}-${{ matrix.cuda_minor }} cuda-libraries-devel-${{ matrix.cuda_major }}-${{ matrix.cuda_minor }};
+            else
+              echo "Unsupported arch for CUDA plugin: ${{ matrix.arch }}" && exit 1;
+            fi
           CIBW_BEFORE_BUILD: >
             gcc --version && g++ --version && nvcc --version
           CIBW_ENVIRONMENT: >
@@ -239,26 +245,28 @@ jobs:
             CC=gcc
             CXX=g++
             SETUPTOOLS_SCM_PRETEND_VERSION="${{ needs.version.outputs.version }}"
-          CIBW_REPAIR_WHEEL_COMMAND: auditwheel repair -w {dest_dir} {wheel} --exclude "libcudart.so.${{ matrix.cuda_major }}" --exclude "libcusparse.so.${{ matrix.cuda_major }}" --exclude "libcublas.so.${{ matrix.cuda_major }}" --exclude "libnvJitLink.so.${{ matrix.cuda_major }}" --exclude "libcublasLt.so.${{ matrix.cuda_major }}"
-      # =====================
-      # = V. Upload wheels  =
-      # =====================
+          CIBW_REPAIR_WHEEL_COMMAND: >
+            auditwheel repair -w {dest_dir} {wheel}
+            --exclude "libcudart.so.${{ matrix.cuda_major }}"
+            --exclude "libcusparse.so.${{ matrix.cuda_major }}"
+            --exclude "libcublas.so.${{ matrix.cuda_major }}"
+            --exclude "libnvrtc.so.${{ matrix.cuda_major }}"
+            --exclude "libnvJitLink.so.${{ matrix.cuda_major }}"
+
       - uses: actions/upload-artifact@v4
         with:
           name: cibw-wheels-${{ strategy.job-index }}
           path: ./wheelhouse/*.whl
+
   publish:
     runs-on: ubuntu-latest
     environment: pypiconf
     defaults:
       run:
         shell: bash
-    needs:
-      - build
-      - select
+    needs: [build, select]
     if: needs.select.outputs.publish == 'true'
     permissions:
-      # IMPORTANT: this permission is mandatory for trusted publishing
       id-token: write
     steps:
       - name: Retrieve release distributions
@@ -266,16 +274,17 @@ jobs:
         with:
           path: wheelhouse/
           merge-multiple: true
+
       - name: List wheels
-        run: |
-          ls -al wheelhouse/*
+        run: ls -al wheelhouse/*
+
       - name: Install twine from PyPI
         uses: install-pinned/twine@c7ca21f7f66fc895b73cba784dc1d0e302e3b4a3 # 6.1.0
+
       - name: Publish release distributions to registry
         env:
           TWINE_NON_INTERACTIVE: "yes"
           TWINE_PASSWORD: ${{ secrets.TWINE_PASSWORD }}
           TWINE_REPOSITORY: ${{ vars.TWINE_REPOSITORY }}
           TWINE_USERNAME: ${{ vars.TWINE_USERNAME }}
-        run: |
-          twine upload wheelhouse/*
+        run: twine upload wheelhouse/*
